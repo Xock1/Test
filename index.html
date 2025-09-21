@@ -1,958 +1,842 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Prometheus-Style Advanced Obfuscator</title>
-</head>
-<body>
-    <h1>Prometheus-Style Advanced Lua Obfuscator</h1>
-    <p style="color: #fff; opacity: 0.8;">Based on Prometheus Obfuscator Architecture</p>
-    
-    <textarea id="scriptInput" placeholder="Paste your Lua script here...">print('hello world')</textarea>
-    
-    <br><br>
-    
-    <button onclick="obfuscate()">Obfuscate</button>
-    <button onclick="copyOutput()">Copy</button>
-    <button onclick="clearAll()">Clear</button>
-    
-    <br><br>
-    
-    <textarea id="scriptOutput" readonly placeholder="Obfuscated script will appear here..."></textarea>
-
-    <script>
-        // Prometheus-style AST Node Types
-        const AstKind = {
-            // Misc
-            TopNode: "TopNode",
-            Block: "Block",
-            
-            // Statements
-            LocalVariableDeclaration: "LocalVariableDeclaration",
-            FunctionCallStatement: "FunctionCallStatement",
-            AssignmentStatement: "AssignmentStatement",
-            ReturnStatement: "ReturnStatement",
-            IfStatement: "IfStatement",
-            WhileStatement: "WhileStatement",
-            ForStatement: "ForStatement",
-            DoStatement: "DoStatement",
-            
-            // Expressions
-            StringExpression: "StringExpression",
-            NumberExpression: "NumberExpression",
-            BooleanExpression: "BooleanExpression",
-            NilExpression: "NilExpression",
-            VariableExpression: "VariableExpression",
-            FunctionCallExpression: "FunctionCallExpression",
-            IndexExpression: "IndexExpression",
-            TableConstructorExpression: "TableConstructorExpression",
-            FunctionLiteralExpression: "FunctionLiteralExpression",
-            
-            // Binary Operations
-            AddExpression: "AddExpression",
-            SubExpression: "SubExpression",
-            MulExpression: "MulExpression",
-            DivExpression: "DivExpression",
-            ModExpression: "ModExpression",
-            PowExpression: "PowExpression",
-            StrCatExpression: "StrCatExpression",
-            
-            // Comparison
-            LessThanExpression: "LessThanExpression",
-            GreaterThanExpression: "GreaterThanExpression",
-            EqualsExpression: "EqualsExpression",
-            NotEqualsExpression: "NotEqualsExpression",
-            
-            // Logical
-            AndExpression: "AndExpression",
-            OrExpression: "OrExpression",
-            NotExpression: "NotExpression",
-        };
-
-        // Prometheus-style Scope Management
-        class Scope {
-            constructor(parent = null) {
-                this.parent = parent;
-                this.variables = new Map();
-                this.varCounter = 0;
-                this.isGlobal = parent === null;
-            }
-            
-            addVariable(name = null) {
-                if (!name) {
-                    name = this.generateVariableName();
-                }
-                const id = ++this.varCounter;
-                this.variables.set(id, name);
-                return id;
-            }
-            
-            getVariableName(id) {
-                return this.variables.get(id) || `var_${id}`;
-            }
-            
-            generateVariableName() {
-                return generateMangledName(this.varCounter);
-            }
-        }
-
-        // Enhanced name generation based on Prometheus
-        let nameId = 0;
-        const VarDigits = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
-        const VarStartDigits = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        let shuffledVarDigits = VarDigits;
-        let shuffledVarStartDigits = VarStartDigits;
-        
-        const charset = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM1234567890";
-        
-        function randomString(len) {
-            len = len || Math.floor(Math.random() * 14) + 2;
-            let result = "";
-            for (let i = 0; i < len; i++) {
-                result += charset[Math.floor(Math.random() * charset.length)];
-            }
-            return result;
-        }
-        
-        function shuffle(array) {
-            const arr = Array.from(array);
-            for (let i = arr.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [arr[i], arr[j]] = [arr[j], arr[i]];
-            }
-            return arr.join('');
-        }
-        
-        function generateMangledName(id) {
-            if (id === null || id === undefined) id = nameId++;
-            
-            let name = '';
-            let d = id % shuffledVarStartDigits.length;
-            id = Math.floor((id - d) / shuffledVarStartDigits.length);
-            name += shuffledVarStartDigits[d];
-            
-            while (id > 0) {
-                d = id % shuffledVarDigits.length;
-                id = Math.floor((id - d) / shuffledVarDigits.length);
-                name += shuffledVarDigits[d];
-            }
-            return name;
-        }
-        
-        function prepareShuffledNameGenerator() {
-            shuffledVarDigits = shuffle(VarDigits);
-            shuffledVarStartDigits = shuffle(VarStartDigits);
-            nameId = Math.floor(Math.random() * 1000);
-        }
-
-        // Prometheus-style AST Factory Functions
-        const Ast = {
-            StringExpression: (value) => ({ kind: AstKind.StringExpression, value, isConstant: true }),
-            NumberExpression: (value) => ({ kind: AstKind.NumberExpression, value, isConstant: true }),
-            BooleanExpression: (value) => ({ kind: AstKind.BooleanExpression, value, isConstant: true }),
-            NilExpression: () => ({ kind: AstKind.NilExpression, value: null, isConstant: true }),
-            VariableExpression: (scope, id) => ({ kind: AstKind.VariableExpression, scope, id }),
-            FunctionCallExpression: (base, args) => ({ kind: AstKind.FunctionCallExpression, base, args }),
-            TableConstructorExpression: (entries) => ({ kind: AstKind.TableConstructorExpression, entries }),
-            IndexExpression: (base, index) => ({ kind: AstKind.IndexExpression, base, index }),
-            
-            // Table entries
-            TableEntry: (value) => ({ kind: "TableEntry", value }),
-            KeyedTableEntry: (key, value) => ({ kind: "KeyedTableEntry", key, value }),
-            
-            // Assignment
-            AssignmentStatement: (lhs, rhs) => ({ kind: AstKind.AssignmentStatement, lhs, rhs }),
-            AssignmentVariable: (scope, id) => ({ kind: "AssignmentVariable", scope, id }),
-            AssignmentIndexing: (base, index) => ({ kind: "AssignmentIndexing", base, index }),
-            
-            // Local declarations
-            LocalVariableDeclaration: (scope, ids, expressions) => ({
-                kind: AstKind.LocalVariableDeclaration, scope, ids, expressions
-            }),
-            
-            // Control flow
-            ReturnStatement: (args) => ({ kind: AstKind.ReturnStatement, args }),
-            Block: (statements, scope) => ({ kind: AstKind.Block, statements, scope }),
-            
-            // Functions
-            FunctionLiteralExpression: (args, body) => ({
-                kind: AstKind.FunctionLiteralExpression, args, body
-            }),
-            
-            // Binary operations
-            AddExpression: (lhs, rhs) => ({ kind: AstKind.AddExpression, lhs, rhs }),
-            SubExpression: (lhs, rhs) => ({ kind: AstKind.SubExpression, lhs, rhs }),
-            MulExpression: (lhs, rhs) => ({ kind: AstKind.MulExpression, lhs, rhs }),
-            DivExpression: (lhs, rhs) => ({ kind: AstKind.DivExpression, lhs, rhs }),
-            OrExpression: (lhs, rhs) => ({ kind: AstKind.OrExpression, lhs, rhs }),
-            AndExpression: (lhs, rhs) => ({ kind: AstKind.AndExpression, lhs, rhs }),
-        };
-
-        // Simple Lua parser for basic constructs
-        class LuaParser {
-            constructor(code) {
-                this.code = code;
-                this.pos = 0;
-                this.length = code.length;
-            }
-            
-            parse() {
-                const globalScope = new Scope();
-                const statements = this.parseStatements(globalScope);
-                return Ast.Block(statements, globalScope);
-            }
-            
-            parseStatements(scope) {
-                const statements = [];
-                
-                while (this.pos < this.length) {
-                    this.skipWhitespace();
-                    if (this.pos >= this.length) break;
-                    
-                    const statement = this.parseStatement(scope);
-                    if (statement) {
-                        statements.push(statement);
-                    }
-                }
-                
-                return statements;
-            }
-            
-            parseStatement(scope) {
-                this.skipWhitespace();
-                
-                if (this.match('local')) {
-                    return this.parseLocalDeclaration(scope);
-                } else if (this.match('print')) {
-                    return this.parsePrintCall(scope);
-                } else if (this.match('return')) {
-                    return this.parseReturn(scope);
-                }
-                
-                // Try to parse as assignment or expression statement
-                const expr = this.parseExpression(scope);
-                if (expr) {
-                    // If it's a function call, make it a statement
-                    if (expr.kind === AstKind.FunctionCallExpression) {
-                        return { kind: AstKind.FunctionCallStatement, base: expr.base, args: expr.args };
-                    }
-                }
-                
-                return expr;
-            }
-            
-            parseLocalDeclaration(scope) {
-                this.consume('local');
-                this.skipWhitespace();
-                
-                const varName = this.parseIdentifier();
-                if (!varName) return null;
-                
-                const varId = scope.addVariable(varName);
-                this.skipWhitespace();
-                
-                let expressions = [];
-                if (this.match('=')) {
-                    this.consume('=');
-                    this.skipWhitespace();
-                    const expr = this.parseExpression(scope);
-                    if (expr) expressions.push(expr);
-                }
-                
-                return Ast.LocalVariableDeclaration(scope, [varId], expressions);
-            }
-            
-            parsePrintCall(scope) {
-                this.consume('print');
-                this.skipWhitespace();
-                this.consume('(');
-                this.skipWhitespace();
-                
-                const args = [];
-                const arg = this.parseExpression(scope);
-                if (arg) args.push(arg);
-                
-                this.skipWhitespace();
-                this.consume(')');
-                
-                const printVar = scope.addVariable('print');
-                return {
-                    kind: AstKind.FunctionCallStatement,
-                    base: Ast.VariableExpression(scope, printVar),
-                    args
-                };
-            }
-            
-            parseReturn(scope) {
-                this.consume('return');
-                this.skipWhitespace();
-                
-                const args = [];
-                const arg = this.parseExpression(scope);
-                if (arg) args.push(arg);
-                
-                return Ast.ReturnStatement(args);
-            }
-            
-            parseExpression(scope) {
-                this.skipWhitespace();
-                
-                if (this.peek() === '"' || this.peek() === "'") {
-                    return this.parseString();
-                }
-                
-                if (this.isDigit(this.peek())) {
-                    return this.parseNumber();
-                }
-                
-                if (this.isAlpha(this.peek())) {
-                    return this.parseIdentifierExpression(scope);
-                }
-                
-                return null;
-            }
-            
-            parseString() {
-                const quote = this.consume();
-                let value = '';
-                
-                while (this.pos < this.length && this.peek() !== quote) {
-                    if (this.peek() === '\\') {
-                        this.consume(); // consume backslash
-                        const escaped = this.consume();
-                        switch (escaped) {
-                            case 'n': value += '\n'; break;
-                            case 't': value += '\t'; break;
-                            case 'r': value += '\r'; break;
-                            case '\\': value += '\\'; break;
-                            case '"': value += '"'; break;
-                            case "'": value += "'"; break;
-                            default: value += escaped; break;
-                        }
-                    } else {
-                        value += this.consume();
-                    }
-                }
-                
-                if (this.pos < this.length) {
-                    this.consume(); // consume closing quote
-                }
-                
-                return Ast.StringExpression(value);
-            }
-            
-            parseNumber() {
-                let value = '';
-                while (this.pos < this.length && (this.isDigit(this.peek()) || this.peek() === '.')) {
-                    value += this.consume();
-                }
-                return Ast.NumberExpression(parseFloat(value));
-            }
-            
-            parseIdentifierExpression(scope) {
-                const name = this.parseIdentifier();
-                if (name) {
-                    const varId = scope.addVariable(name);
-                    return Ast.VariableExpression(scope, varId);
-                }
-                return null;
-            }
-            
-            parseIdentifier() {
-                let name = '';
-                if (this.isAlpha(this.peek()) || this.peek() === '_') {
-                    name += this.consume();
-                    while (this.pos < this.length && (this.isAlphaNumeric(this.peek()) || this.peek() === '_')) {
-                        name += this.consume();
-                    }
-                }
-                return name || null;
-            }
-            
-            // Utility methods
-            peek() {
-                return this.pos < this.length ? this.code[this.pos] : null;
-            }
-            
-            consume(expected = null) {
-                if (expected && !this.match(expected)) {
-                    throw new Error(`Expected '${expected}' but got '${this.peek()}'`);
-                }
-                return this.pos < this.length ? this.code[this.pos++] : null;
-            }
-            
-            match(str) {
-                return this.code.substr(this.pos, str.length) === str;
-            }
-            
-            skipWhitespace() {
-                while (this.pos < this.length && /\s/.test(this.peek())) {
-                    this.pos++;
-                }
-            }
-            
-            isDigit(char) {
-                return char && /\d/.test(char);
-            }
-            
-            isAlpha(char) {
-                return char && /[a-zA-Z]/.test(char);
-            }
-            
-            isAlphaNumeric(char) {
-                return this.isAlpha(char) || this.isDigit(char);
-            }
-        }
-
-        // Prometheus-style Compiler
-        class PrometheusCompiler {
-            constructor() {
-                this.globalScope = new Scope();
-                this.currentScope = this.globalScope;
-                this.stringConstants = [];
-                this.numberConstants = [];
-                this.upvalues = new Map();
-                this.registers = new Map();
-                this.nextRegisterId = 0;
-            }
-            
-            compile(ast) {
-                this.stringConstants = [];
-                this.numberConstants = [];
-                
-                // First pass: collect constants
-                this.collectConstants(ast);
-                
-                // Second pass: transform AST
-                const transformed = this.transformBlock(ast);
-                
-                // Generate obfuscated code
-                return this.generateCode(transformed);
-            }
-            
-            collectConstants(node) {
-                if (!node || typeof node !== 'object') return;
-                
-                if (node.kind === AstKind.StringExpression) {
-                    if (!this.stringConstants.includes(node.value)) {
-                        this.stringConstants.push(node.value);
-                    }
-                } else if (node.kind === AstKind.NumberExpression) {
-                    if (!this.numberConstants.includes(node.value)) {
-                        this.numberConstants.push(node.value);
-                    }
-                }
-                
-                // Recursively process all properties
-                for (const key in node) {
-                    if (key !== 'scope') { // avoid infinite recursion
-                        const value = node[key];
-                        if (Array.isArray(value)) {
-                            value.forEach(item => this.collectConstants(item));
-                        } else if (typeof value === 'object') {
-                            this.collectConstants(value);
-                        }
-                    }
-                }
-            }
-            
-            transformBlock(block) {
-                const transformedStatements = [];
-                
-                // Add constant table initialization
-                if (this.stringConstants.length > 0) {
-                    const constTableVar = this.globalScope.addVariable();
-                    const shuffledConstants = [...this.stringConstants];
-                    
-                    // Shuffle constants
-                    for (let i = shuffledConstants.length - 1; i > 0; i--) {
-                        const j = Math.floor(Math.random() * (i + 1));
-                        [shuffledConstants[i], shuffledConstants[j]] = [shuffledConstants[j], shuffledConstants[i]];
-                    }
-                    
-                    // Add decoy strings
-                    for (let i = 0; i < 5; i++) {
-                        shuffledConstants.splice(
-                            Math.floor(Math.random() * shuffledConstants.length),
-                            0,
-                            randomString(8)
-                        );
-                    }
-                    
-                    const tableEntries = shuffledConstants.map(str => 
-                        Ast.TableEntry(Ast.StringExpression(str))
-                    );
-                    
-                    transformedStatements.push(
-                        Ast.LocalVariableDeclaration(
-                            this.globalScope,
-                            [constTableVar],
-                            [Ast.TableConstructorExpression(tableEntries)]
-                        )
-                    );
-                    
-                    this.constTableVar = constTableVar;
-                }
-                
-                // Transform original statements
-                for (const statement of block.statements) {
-                    const transformed = this.transformStatement(statement);
-                    if (transformed) {
-                        transformedStatements.push(transformed);
-                    }
-                }
-                
-                return Ast.Block(transformedStatements, block.scope);
-            }
-            
-            transformStatement(statement) {
-                if (!statement) return null;
-                
-                switch (statement.kind) {
-                    case AstKind.LocalVariableDeclaration:
-                        return this.transformLocalDeclaration(statement);
-                    case AstKind.FunctionCallStatement:
-                        return this.transformFunctionCallStatement(statement);
-                    case AstKind.ReturnStatement:
-                        return this.transformReturnStatement(statement);
-                    default:
-                        return statement;
-                }
-            }
-            
-            transformLocalDeclaration(statement) {
-                const transformedExpressions = statement.expressions.map(expr => 
-                    this.transformExpression(expr)
-                );
-                
-                return Ast.LocalVariableDeclaration(
-                    statement.scope,
-                    statement.ids,
-                    transformedExpressions
-                );
-            }
-            
-            transformFunctionCallStatement(statement) {
-                return {
-                    ...statement,
-                    base: this.transformExpression(statement.base),
-                    args: statement.args.map(arg => this.transformExpression(arg))
-                };
-            }
-            
-            transformReturnStatement(statement) {
-                return Ast.ReturnStatement(
-                    statement.args.map(arg => this.transformExpression(arg))
-                );
-            }
-            
-            transformExpression(expression) {
-                if (!expression) return null;
-                
-                switch (expression.kind) {
-                    case AstKind.StringExpression:
-                        return this.transformStringExpression(expression);
-                    case AstKind.NumberExpression:
-                        return this.transformNumberExpression(expression);
-                    case AstKind.VariableExpression:
-                        return expression; // Variable names already mangled by scope
-                    default:
-                        return expression;
-                }
-            }
-            
-            transformStringExpression(expression) {
-                if (this.constTableVar) {
-                    const index = this.stringConstants.indexOf(expression.value);
-                    if (index !== -1) {
-                        // Create obfuscated index access
-                        const obfuscatedIndex = this.createObfuscatedNumber(index + 1);
-                        return Ast.IndexExpression(
-                            Ast.VariableExpression(this.globalScope, this.constTableVar),
-                            obfuscatedIndex
-                        );
-                    }
-                }
-                return expression;
-            }
-            
-            transformNumberExpression(expression) {
-                if (Math.random() < 0.7) {
-                    return this.createObfuscatedNumber(expression.value);
-                }
-                return expression;
-            }
-            
-            createObfuscatedNumber(value) {
-                const methods = [
-                    // Simple arithmetic
-                    (val) => {
-                        const a = Math.floor(Math.random() * 100) + 1;
-                        const b = val - a;
-                        return Ast.AddExpression(Ast.NumberExpression(a), Ast.NumberExpression(b));
-                    },
-                    // Subtraction
-                    (val) => {
-                        const a = val + Math.floor(Math.random() * 50) + 10;
-                        const b = a - val;
-                        return Ast.SubExpression(Ast.NumberExpression(a), Ast.NumberExpression(b));
-                    },
-                    // Multiplication
-                    (val) => {
-                        if (val === 0) return Ast.NumberExpression(0);
-                        const factor = Math.floor(Math.random() * 10) + 2;
-                        return Ast.DivExpression(Ast.NumberExpression(val * factor), Ast.NumberExpression(factor));
-                    }
-                ];
-                
-                const method = methods[Math.floor(Math.random() * methods.length)];
-                return method(value);
-            }
-            
-            generateCode(ast) {
-                // Simple code generation - in a real implementation this would be much more sophisticated
-                return this.unparseBlock(ast);
-            }
-            
-            unparseBlock(block) {
-                return block.statements.map(stmt => this.unparseStatement(stmt)).join(' ');
-            }
-            
-            unparseStatement(statement) {
-                switch (statement.kind) {
-                    case AstKind.LocalVariableDeclaration:
-                        return this.unparseLocalDeclaration(statement);
-                    case AstKind.FunctionCallStatement:
-                        return this.unparseFunctionCallStatement(statement);
-                    case AstKind.ReturnStatement:
-                        return this.unparseReturnStatement(statement);
-                    default:
-                        return '';
-                }
-            }
-            
-            unparseLocalDeclaration(statement) {
-                const varNames = statement.ids.map(id => statement.scope.getVariableName(id));
-                const expressions = statement.expressions.map(expr => this.unparseExpression(expr));
-                
-                if (expressions.length > 0) {
-                    return `local ${varNames.join(',')}=${expressions.join(',')}`;
-                } else {
-                    return `local ${varNames.join(',')}`;
-                }
-            }
-            
-            unparseFunctionCallStatement(statement) {
-                const base = this.unparseExpression(statement.base);
-                const args = statement.args.map(arg => this.unparseExpression(arg)).join(',');
-                return `${base}(${args})`;
-            }
-            
-            unparseReturnStatement(statement) {
-                const args = statement.args.map(arg => this.unparseExpression(arg)).join(',');
-                return `return ${args}`;
-            }
-            
-            unparseExpression(expression) {
-                if (!expression) return '';
-                
-                switch (expression.kind) {
-                    case AstKind.StringExpression:
-                        return `"${this.escapeString(expression.value)}"`;
-                    case AstKind.NumberExpression:
-                        return expression.value.toString();
-                    case AstKind.VariableExpression:
-                        return expression.scope.getVariableName(expression.id);
-                    case AstKind.IndexExpression:
-                        return `${this.unparseExpression(expression.base)}[${this.unparseExpression(expression.index)}]`;
-                    case AstKind.TableConstructorExpression:
-                        const entries = expression.entries.map(entry => {
-                            if (entry.kind === 'KeyedTableEntry') {
-                                return `[${this.unparseExpression(entry.key)}]=${this.unparseExpression(entry.value)}`;
-                            } else {
-                                return this.unparseExpression(entry.value);
-                            }
-                        }).join(',');
-                        return `{${entries}}`;
-                    case AstKind.AddExpression:
-                        return `(${this.unparseExpression(expression.lhs)}+${this.unparseExpression(expression.rhs)})`;
-                    case AstKind.SubExpression:
-                        return `(${this.unparseExpression(expression.lhs)}-${this.unparseExpression(expression.rhs)})`;
-                    case AstKind.MulExpression:
-                        return `(${this.unparseExpression(expression.lhs)}*${this.unparseExpression(expression.rhs)})`;
-                    case AstKind.DivExpression:
-                        return `(${this.unparseExpression(expression.lhs)}/${this.unparseExpression(expression.rhs)})`;
-                    default:
-                        return expression.toString();
-                }
-            }
-            
-            escapeString(str) {
-                return str.replace(/\\/g, '\\\\')
-                         .replace(/"/g, '\\"')
-                         .replace(/\n/g, '\\n')
-                         .replace(/\t/g, '\\t')
-                         .replace(/\r/g, '\\r');
-            }
-        }
-
-        // Enhanced Control Flow Obfuscation
-        function addControlFlowObfuscation(code) {
-            const wrapperVar1 = generateMangledName();
-            const wrapperVar2 = generateMangledName();
-            const conditionVar = generateMangledName();
-            const dummyVar = generateMangledName();
-            
-            // Create complex nested structure
-            return `do local ${conditionVar}=true;` +
-                   `local ${dummyVar}=function()return ${Math.floor(Math.random()*1000)}end;` +
-                   `local ${wrapperVar1}=function()` +
-                   `if ${conditionVar} and ${dummyVar}()>0 then ` +
-                   code +
-                   ` end end;` +
-                   `local ${wrapperVar2}=function()` +
-                   `if not not ${conditionVar} then ${wrapperVar1}() end ` +
-                   `end;${wrapperVar2}() end`;
-        }
-
-        // Advanced Anti-Tamper Protection
-        function addAntiTamper(code) {
-            const checks = [];
-            
-            for (let i = 0; i < 3; i++) {
-                const checkVar = generateMangledName();
-                const errorVar = generateMangledName();
-                const validationVar = generateMangledName();
-                
-                const randomValue1 = Math.floor(Math.random() * 10000);
-                const randomValue2 = Math.floor(Math.random() * 10000);
-                const expectedResult = randomValue1 + randomValue2;
-                
-                checks.push(
-                    `local ${validationVar}=${randomValue1}+${randomValue2};` +
-                    `local ${checkVar}=${validationVar}==${expectedResult};` +
-                    `local ${errorVar}=function()error("Tampering detected!",0)end;` +
-                    `if not ${checkVar} then ${errorVar}()end;`
-                );
-            }
-            
-            // Environment validation
-            const envVar = generateMangledName();
-            const envCheck = `local ${envVar}=getfenv and pcall and type;` +
-                            `if not ${envVar} then error("Invalid environment!",0)end;`;
-            
-            return envCheck + checks.join('') + code;
-        }
-        
-        function obfuscate() {
-            const input = document.getElementById('scriptInput').value;
-            if (!input.trim()) {
-                alert('Please enter a script first!');
-                return;
-            }
-            
-            try {
-                console.log('Starting Prometheus-style obfuscation...');
-                
-                prepareShuffledNameGenerator();
-                
-                console.log('Step 1: Parsing Lua code...');
-                const parser = new LuaParser(input);
-                const ast = parser.parse();
-                
-                console.log('Step 2: Compiling with Prometheus-style transformations...');
-                 const compiler = new PrometheusCompiler();
-                let obfuscated = compiler.compile(ast);
-                
-                console.log('Step 3: Adding control flow obfuscation...');
-                obfuscated = addControlFlowObfuscation(obfuscated);
-                
-                console.log('Step 4: Adding anti-tamper protection...');
-                obfuscated = addAntiTamper(obfuscated);
-                
-                console.log('Step 5: Adding multiple wrapper layers...');
-                for (let i = 0; i < 3; i++) {
-                    const wrapperVar = generateMangledName();
-                    const dummyVar = generateMangledName();
-                    obfuscated = `(function(${wrapperVar})` +
-                               `local ${dummyVar}=${wrapperVar} or function()end;` +
-                               `return(function()${obfuscated} end)()` +
-                               `end)()`;
-                }
-                
-                console.log('Step 6: Final watermarking...');
-                const watermark = `--[[Protected by Prometheus-Style Obfuscator ${randomString(8)}]]`;
-                obfuscated = watermark + obfuscated;
-                
-                console.log('Prometheus-style obfuscation complete!');
-                document.getElementById('scriptOutput').value = obfuscated;
-                
-            } catch (error) {
-                console.error('Obfuscation error:', error);
-                alert('Obfuscation failed: ' + error.message);
-                document.getElementById('scriptOutput').value = 'Error: ' + error.message + '\n\nNote: This is a simplified parser. For complex Lua code, use the full Prometheus obfuscator.';
-            }
-        }
-
-        function copyOutput() {
-            const output = document.getElementById('scriptOutput');
-            if (!output.value.trim()) {
-                alert('Nothing to copy! Obfuscate a script first.');
-                return;
-            }
-            
-            output.select();
-            document.execCommand('copy');
-            alert('Obfuscated code copied to clipboard!');
-        }
-
-        function clearAll() {
-            document.getElementById('scriptInput').value = '';
-            document.getElementById('scriptOutput').value = '';
-            console.clear();
-        }
-    </script>
-
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Script Obfuscator</title>
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            max-width: 1200px;
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 800px;
             margin: 0 auto;
+            background: white;
             padding: 20px;
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            min-height: 100vh;
-            color: white;
-        }
-        
-        h1 {
-            text-align: center;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
-            font-size: 2.5em;
-            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-        }
-        
-        p {
-            text-align: center;
-            margin-bottom: 30px;
-            font-style: italic;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
         
         textarea {
             width: 100%;
-            height: 220px;
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            height: 300px;
+            font-family: 'Courier New', monospace;
             font-size: 14px;
-            border: none;
-            border-radius: 12px;
-            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+            padding: 10px;
             resize: vertical;
             box-sizing: border-box;
-            background: rgba(255,255,255,0.95);
-            color: #333;
-            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
-            backdrop-filter: blur(10px);
-            transition: all 0.3s ease;
         }
         
-        textarea:focus {
-            outline: none;
-            box-shadow: 0 12px 35px rgba(0,0,0,0.4);
-            transform: translateY(-2px);
-        }
-        
-        textarea::placeholder {
-            color: #666;
-            opacity: 0.8;
+        .buttons {
+            margin: 15px 0;
+            text-align: center;
         }
         
         button {
-            padding: 15px 30px;
-            margin: 8px;
-            font-size: 16px;
-            font-weight: bold;
-            border: none;
-            border-radius: 25px;
-            cursor: pointer;
-            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            background: #007cba;
             color: white;
-            transition: all 0.3s ease;
-            box-shadow: 0 6px 20px rgba(238, 90, 36, 0.3);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        button::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-            transition: left 0.5s;
-        }
-        
-        button:hover::before {
-            left: 100%;
+            border: none;
+            padding: 10px 20px;
+            margin: 0 5px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 14px;
         }
         
         button:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 30px rgba(238, 90, 36, 0.4);
+            background: #005a8b;
         }
         
-        button:active {
-            transform: translateY(-1px);
-        }
-        
-        #scriptOutput {
-            background: rgba(40,44,52,0.95);
-            color: #61dafb;
-            border: 2px solid rgba(97, 218, 251, 0.3);
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-        }
-        
-        #scriptOutput:focus {
-            border-color: rgba(97, 218, 251, 0.6);
-        }
-        
-        @keyframes pulse {
-            0% { box-shadow: 0 6px 20px rgba(238, 90, 36, 0.3); }
-            50% { box-shadow: 0 8px 25px rgba(238, 90, 36, 0.5); }
-            100% { box-shadow: 0 6px 20px rgba(238, 90, 36, 0.3); }
-        }
-        
-        button:focus {
-            animation: pulse 2s infinite;
-            outline: none;
-        }
-        
-        /* Responsive design */
-        @media (max-width: 768px) {
-            body {
-                padding: 15px;
-            }
-            
-            h1 {
-                font-size: 2em;
-            }
-            
-            textarea {
-                height: 180px;
-                padding: 15px;
-            }
-            
-            button {
-                padding: 12px 25px;
-                font-size: 14px;
-                margin: 5px;
-            }
+        h3 {
+            margin: 20px 0 10px 0;
+            color: #333;
         }
     </style>
+</head>
+<body>
+    <div class="container">
+        <h3>Put script here</h3>
+        <textarea id="inputScript" placeholder="local script = 'your code here'"></textarea>
+        
+        <div class="buttons">
+            <button onclick="obfuscateScript()">Obfuscate</button>
+            <button onclick="clearScript()">Clear</button>
+            <button onclick="copyScript()">Copy</button>
+        </div>
+        
+        <h3>Output</h3>
+        <textarea id="outputScript" readonly></textarea>
+    </div>
+
+    <script>
+        // Direct implementation of your Hercules modules
+
+        // Watermark module
+        function addWatermark(code) {
+            return "--[Obfuscated by Hercules v1.6.2 | hercules-obfuscator.xyz/discord | hercules-obfuscator.xyz/source]\n" + code;
+        }
+
+        // Variable Renamer module
+        function variableRenamer(code) {
+            const varencNames = {};
+            const luaFunctions = [
+                "assert", "collectgarbage", "dofile", "loadfile", "loadstring",
+                "ipairs", "pairs", "tonumber", "tostring", "type", "print",
+                "_G", "_VERSION", "write", "sort",
+                "math.abs", "math.acos", "math.asin", "math.atan", "math.atan2",
+                "math.ceil", "math.cos", "math.cosh", "math.deg", "math.exp",
+                "math.floor", "math.fmod", "math.frexp", "math.ldexp", "math.log",
+                "math.log10", "math.max", "math.min", "math.modf", "math.pi",
+                "math.pow", "math.rad", "math.random", "math.randomseed", "math.sin",
+                "math.sinh", "math.sqrt", "math.tan", "math.tanh",
+                "string.byte", "string.char", "string.dump", "string.find",
+                "string.format", "string.gmatch", "string.gsub", "string.len",
+                "string.lower", "string.match", "string.rep", "string.reverse",
+                "string.sub", "string.upper",
+                "table.concat", "table.insert", "table.remove", "table.sort",
+                "table.pack", "table.unpack", "game:GetService"
+            ];
+
+            const reservedWords = {
+                "if": true, "then": true, "else": true, "elseif": true, "end": true,
+                "for": true, "while": true, "do": true, "repeat": true, "until": true,
+                "function": true, "local": true, "return": true, "break": true, "continue": true,
+                "and": true, "or": true, "not": true, "in": true, "nil": true,
+                "true": true, "false": true
+            };
+
+            function generateRandomName() {
+                const len = Math.floor(Math.random() * (12 - 8 + 1)) + 8;
+                const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                let name = "";
+                for (let i = 0; i < len; i++) {
+                    name += charset[Math.floor(Math.random() * charset.length)];
+                }
+                return name;
+            }
+
+            function replaceUnquoted(input, target, replacement) {
+                const placeholder = "!!!";
+                let protectedInput = input.replace(/(['"])(?:(?=(\\?))\2.)*?\1/g, function(match, quote) {
+                    return match.replace(new RegExp(target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), placeholder);
+                });
+                
+                let result = protectedInput.replace(new RegExp(`\\b${target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'), replacement);
+                result = result.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), target);
+                return result;
+            }
+
+            function obfuscateLocalVariables(code) {
+                const localVarPattern = /local\s+([a-zA-Z_][a-zA-Z0-9_,\s]*)\s*=/g;
+                const varMap = {};
+                let obfuscatedCode = code;
+                
+                let match;
+                while ((match = localVarPattern.exec(code)) !== null) {
+                    const localVars = match[1];
+                    const vars = localVars.split(',');
+                    for (let i = 0; i < vars.length; i++) {
+                        const varName = vars[i].trim();
+                        if (varName.length > 1 && !varencNames[varName] && !reservedWords[varName]) {
+                            varMap[varName] = generateRandomName();
+                        }
+                    }
+                }
+                
+                for (const [originalVar, obfuscatedVar] of Object.entries(varMap)) {
+                    obfuscatedCode = replaceUnquoted(obfuscatedCode, originalVar, obfuscatedVar);
+                }
+                
+                return obfuscatedCode;
+            }
+
+            function obfuscateFunctions(code) {
+                const funcMap = {};
+                const argMap = {};
+                let obfuscatedCode = code;
+                
+                const funcPattern = /function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([a-zA-Z0-9_,\s]*)\)/g;
+                let match;
+                while ((match = funcPattern.exec(code)) !== null) {
+                    const funcName = match[1];
+                    const args = match[2];
+                    
+                    if (!reservedWords[funcName] && !funcMap[funcName]) {
+                        funcMap[funcName] = generateRandomName();
+                    }
+                    
+                    if (args) {
+                        const argList = args.split(',');
+                        for (let arg of argList) {
+                            arg = arg.trim();
+                            if (arg && !reservedWords[arg] && !argMap[arg]) {
+                                argMap[arg] = generateRandomName();
+                            }
+                        }
+                    }
+                }
+                
+                obfuscatedCode = obfuscatedCode.replace(/function\s+([a-zA-Z_][a-zA-Z0-9_]*)/g, function(match, funcName) {
+                    return "function " + (funcMap[funcName] || funcName);
+                });
+                
+                for (const [originalFunc, obfuscatedFunc] of Object.entries(funcMap)) {
+                    const regex = new RegExp(`\\b${originalFunc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\(`, 'g');
+                    obfuscatedCode = obfuscatedCode.replace(regex, obfuscatedFunc + "(");
+                }
+                
+                for (const [originalArg, obfuscatedArg] of Object.entries(argMap)) {
+                    obfuscatedCode = replaceUnquoted(obfuscatedCode, originalArg, obfuscatedArg);
+                }
+                
+                return obfuscatedCode;
+            }
+
+            const renamedVars = [];
+            const assignmentLines = [];
+            let obfuscatedCode = obfuscateLocalVariables(code);
+            obfuscatedCode = obfuscateFunctions(obfuscatedCode);
+            
+            for (const functionName of luaFunctions) {
+                if (code.indexOf(functionName) !== -1) {
+                    if (!varencNames[functionName]) {
+                        const newName = generateRandomName();
+                        varencNames[functionName] = newName;
+                        renamedVars.push(newName);
+                        assignmentLines.push(newName + " = " + functionName + ";");
+                    }
+                    const regex = new RegExp(functionName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + "\\(", 'g');
+                    obfuscatedCode = obfuscatedCode.replace(regex, varencNames[functionName] + "(");
+                }
+            }
+            
+            const localDeclaration = renamedVars.length > 0 ? "local " + renamedVars.join(", ") : "";
+            const assignments = assignmentLines.length > 0 ? "\n" + assignmentLines.join(" ") : "";
+            
+            return localDeclaration + assignments + "\n" + obfuscatedCode;
+        }
+
+        // String Encoder module
+        function stringEncoder(code) {
+            const randomDecryptName = generateRandomName();
+            const randomIsValidCharName = generateRandomName();
+            const randomResultName = generateRandomName();
+            const randomCodeName = generateRandomName();
+            const randomOffsetName = generateRandomName();
+            const randomByteName = generateRandomName();
+            const randomNewByteName = generateRandomName();
+
+            function generateRandomName(len) {
+                len = len || Math.floor(Math.random() * (12 - 8 + 1)) + 8;
+                const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                let name = "";
+                for (let i = 0; i < len; i++) {
+                    name += charset[Math.floor(Math.random() * charset.length)];
+                }
+                return name;
+            }
+
+            function isValidChar(byte) {
+                return (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122);
+            }
+
+            function caesarCipher(data, offset) {
+                let result = [];
+                let i = 0;
+                while (i < data.length) {
+                    const byte = data.charCodeAt(i);
+                    if (byte === 92 && i < data.length - 1) {
+                        const nextChar = data.substr(i + 1, 1);
+                        if (nextChar === "2" && data.substr(i + 2, 1) === "7") {
+                            result.push(String.fromCharCode(byte));
+                            result.push(nextChar);
+                            result.push(data.substr(i + 2, 1));
+                            i += 2;
+                        } else {
+                            result.push(String.fromCharCode(byte));
+                            result.push(nextChar);
+                            i += 1;
+                        }
+                    } else if (isValidChar(byte)) {
+                        let newByte;
+                        if (byte >= 48 && byte <= 57) {
+                            newByte = ((byte - 48 + offset) % 10) + 48;
+                        } else if (byte >= 65 && byte <= 90) {
+                            newByte = ((byte - 65 + offset) % 26) + 65;
+                        } else if (byte >= 97 && byte <= 122) {
+                            newByte = ((byte - 97 + offset) % 26) + 97;
+                        }
+                        result.push(String.fromCharCode(newByte));
+                    } else {
+                        result.push(String.fromCharCode(byte));
+                    }
+                    i++;
+                }
+                return result.join("");
+            }
+
+            const decodeFunction = `
+local function ${randomIsValidCharName}(${randomByteName})
+    return (${randomByteName} >= 48 and ${randomByteName} <= 57) or (${randomByteName} >= 65 and ${randomByteName} <= 90) or (${randomByteName} >= 97 and ${randomByteName} <= 122)
+end
+	
+local function ${randomDecryptName}(${randomCodeName}, ${randomOffsetName})
+    local ${randomResultName} = {}
+    for i = 1, #${randomCodeName} do
+        local ${randomByteName} = ${randomCodeName}:byte(i)
+        if ${randomIsValidCharName}(${randomByteName}) then
+            local ${randomNewByteName}
+            if ${randomByteName} >= 48 and ${randomByteName} <= 57 then
+                ${randomNewByteName} = ((${randomByteName} - 48 - ${randomOffsetName} + 10) % 10) + 48
+            elseif ${randomByteName} >= 65 and ${randomByteName} <= 90 then
+                ${randomNewByteName} = ((${randomByteName} - 65 - ${randomOffsetName} + 26) % 26) + 65
+            elseif ${randomByteName} >= 97 and ${randomByteName} <= 122 then
+                ${randomNewByteName} = ((${randomByteName} - 97 - ${randomOffsetName} + 26) % 26) + 97
+            end
+            table.insert(${randomResultName}, string.char(${randomNewByteName}))
+        else
+            table.insert(${randomResultName}, string.char(${randomByteName}))
+        end
+    end
+    return table.concat(${randomResultName})
+end
+
+local function ${randomIsValidCharName}(${randomByteName})
+    return (${randomByteName} >= 48 and ${randomByteName} <= 57) or (${randomByteName} >= 65 and ${randomByteName} <= 90) or (${randomByteName} >= 97 and ${randomByteName} <= 122)
+end
+`;
+
+            code = code.replace(/\\"/g, '!@!').replace(/\\'/g, "@!@");
+
+            code = code.replace(/(['"])(.*)?\1/g, function(match, quote, str) {
+                if (typeof str === "string") {
+                    str = str.replace(/!@!/g, '\\"').replace(/@!@/g, "\\'");
+
+                    let offset = Math.floor(Math.random() * 9) + 1;
+                    if (str.match(/[a-zA-Z]/)) {
+                        offset = Math.floor(Math.random() * 25) + 1;
+                    }
+                    const encodedStr = caesarCipher(str, offset);
+                    return `${randomDecryptName}(${quote}${encodedStr}${quote}, ${offset})`;
+                } else {
+                    return str;
+                }
+            });
+
+            return decodeFunction + "\n" + code;
+        }
+
+        // Opaque Predicate Injector module
+        function opaquePredicateInjector(code) {
+            function generatePredicates() {
+                const predicates = [
+                    function() {
+                        const n = Math.floor(Math.random() * 90) + 10;
+                        return `if (${n} % 1 == 0 and ${n} >= ${n}) then`;
+                    },
+                    function() {
+                        const x = Math.floor(Math.random() * 10) + 1;
+                        return `if (${x} % ${x} == 0) then`;
+                    },
+                    function() {
+                        const angle = Math.floor(Math.random() * 360);
+                        return `if (math.sin(${angle})^2 + math.cos(${angle})^2 >= 0.99999) then`;
+                    },
+                    function() {
+                        const str = Math.floor(Math.random() * 8999) + 1000;
+                        return `if (select(2, pcall(function() return tonumber('${str.toString(16)}', 16) end)) ~= nil) then`;
+                    },
+                    function() {
+                        const size = Math.floor(Math.random() * 3) + 2;
+                        const arr = Array(size).fill("1").join(",");
+                        return `if (#{${arr}} == ${size}) then`;
+                    },
+                    function() {
+                        const a = Math.floor(Math.random() * 10) + 1;
+                        const b = Math.floor(Math.random() * 10) + 11;
+                        return `if ((${a} < ${b}) == not (${a} >= ${b})) then`;
+                    }
+                ];
+                return predicates[Math.floor(Math.random() * predicates.length)]();
+            }
+
+            function isInjectSafe(statement) {
+                if (statement.match(/^\s*[{}]\s*$/) ||
+                    statement.match(/^\s*$/) ||
+                    !statement.match(/.+;/)) {
+                    return false;
+                }
+                const unsafes = [
+                    /^\s*for\s+/,
+                    /^\s*while\s+/,
+                    /^\s*if\s+/,
+                    /^\s*repeat\s+/,
+                    /^\s*until\s+/,
+                    /^\s*function\s+/,
+                    /^\s*local\s+function/,
+                    /^\s*do\s+/
+                ];
+                for (const pattern of unsafes) {
+                    if (statement.match(pattern)) {
+                        return false;
+                    }
+                }
+                if (statement.match(/^\s*if\s+.+\s+then\s+.+\s+end\s*;?$/)) {
+                    return false;
+                }
+                return true;
+            }
+
+            function injectPredicates(block) {
+                if (block.match(/\s*end\s*;?$/) || block.match(/^\s*return/)) {
+                    return block;
+                } else {
+                    const predicate = generatePredicates();
+                    return predicate + block + " end;";
+                }
+            }
+
+            if (typeof code !== "string") {
+                throw new Error("Input must be a string");
+            }
+            
+            try {
+                let result = code.replace(/([ \t]*)([^\n;]*;)/g, function(match, ws, statement) {
+                    if (isInjectSafe(statement)) {
+                        return ws + injectPredicates(statement);
+                    } else {
+                        return ws + statement;
+                    }
+                });
+                result = result.replace(/([ \t]*)(return\s+[^\n;]+;)/g, function(match, ws, returnStmt) {
+                    return ws + returnStmt;
+                });
+                return result;
+            } catch (error) {
+                throw new Error("Failed to process code: " + error.toString());
+            }
+        }
+
+        // Garbage Code Inserter module
+        function garbageCodeInserter(code, garbageBlocks = 20) {
+            function generateRandomVariableName() {
+                const name = [];
+                for (let i = 0; i < 6; i++) {
+                    name.push(String.fromCharCode(Math.floor(Math.random() * 26) + 97));
+                }
+                return name.join("");
+            }
+
+            function generateRandomNumber(max = 100) {
+                return Math.floor(Math.random() * max) + 1;
+            }
+
+            const codeTypes = {
+                variable: function() {
+                    return `local ${generateRandomVariableName()} = ${generateRandomNumber()}`;
+                },
+                while_loop: function() {
+                    return `while ${Math.random() > 0.5 ? 'true' : 'false'} do local _ = ${generateRandomNumber(100)} break end`;
+                },
+                for_loop: function() {
+                    return `for ${generateRandomVariableName()} = 1, ${generateRandomNumber(10)} do local _ = ${generateRandomNumber()} end`;
+                },
+                if_statement: function() {
+                    return `if ${Math.random() > 0.5 ? 'true' : 'false'} then local _ = ${generateRandomNumber()} end`;
+                },
+                function_def: function() {
+                    return `local function ${generateRandomVariableName()}(${generateRandomVariableName()}) local _ = ${generateRandomNumber()} end`;
+                }
+            };
+
+            const codeTypeKeys = Object.keys(codeTypes);
+
+            function generateRandomCode() {
+                return codeTypes[codeTypeKeys[Math.floor(Math.random() * codeTypeKeys.length)]]();
+            }
+
+            function generateGarbage(blocks, sep = "\n") {
+                const garbageCode = [];
+                for (let i = 0; i < blocks; i++) {
+                    const code = generateRandomCode();
+                    if (!code.match(/while true/) && !code.match(/for \w+ = \d+, \d+ do local _ = \d+ end/)) {
+                        garbageCode.push(code);
+                    }
+                }
+                return garbageCode.join(sep);
+            }
+
+            if (typeof code !== "string" || code.length === 0) {
+                throw new Error("Input code must be a non-empty string");
+            }
+            if (typeof garbageBlocks !== "number") {
+                throw new Error("garbage_blocks must be a number");
+            }
+            
+            const prefixGarbage = generateGarbage(garbageBlocks);
+            const suffixGarbage = generateGarbage(garbageBlocks);
+            return [prefixGarbage, code, suffixGarbage].join("\n");
+        }
+
+        // Control Flow Obfuscator module  
+        function controlFlowObfuscator(code) {
+            function controlFlow(code, n, a, depth = 0, depthValues = []) {
+                n = n || Math.floor(Math.random() * 7000);
+                a = n;
+                depthValues.push({n, a});
+
+                const operators = [">", "<", "=="];
+                const whileOperator = operators[Math.floor(Math.random() * 3)];
+                
+                const step = Math.floor(Math.random() * 990) + 10;
+                const maxIterations = 3;
+                if (whileOperator === "<") {
+                    a = n + (step * maxIterations);
+                } else if (whileOperator === ">") {
+                    a = n - (step * maxIterations);
+                    if (a < 0) a = 0;
+                } else if (whileOperator === "==") {
+                    a = n;
+                }
+
+                const threshold = n + step;
+
+                let src = depth === 0 ? `local thing = ${n};\nlocal thing2 = ${a};\nlocal counter = 0;\nlocal threshold = ${threshold};\n` : "";
+
+                src += `while thing ${whileOperator} thing2 and counter < ${maxIterations} do\n`;
+                src += `    thing = thing + ${step};\n`;
+                src += "    counter = counter + 1;\n";
+                src += "    if thing < threshold then\n";
+
+                function generateSpoof() {
+                    const spoofLines = [
+                        `local temp = ${Math.floor(Math.random() * 100)}; temp = temp * 2;`,
+                        "local str = 'dummy'; str = str .. str;",
+                        `local x = ${Math.floor(Math.random() * 50)}; x = x - ${Math.floor(Math.random() * 10)};`,
+                        "local tbl = {1, 2, 3}; table.sort(tbl, function(a, b) return a > b end);"
+                    ];
+                    return spoofLines[Math.floor(Math.random() * spoofLines.length)];
+                }
+
+                if (Array.isArray(code) && depth === code.length - 1) {
+                    src += `        ${generateSpoof()}\n`;
+                    src += `    else\n        ${code[0]}\n        break\n`;
+                } else {
+                    src += `        ${generateSpoof()}\n`;
+                    src += `    else\n        ${code}\n        break\n`;
+                }
+
+                src += "    end\nend\n";
+
+                if (Math.random() > 0.5) {
+                    src += `local dummy = 1; dummy = dummy + ${Math.floor(Math.random() * 10)};\n`;
+                }
+
+                return depth === 0 ? src : {src, n, a};
+            }
+
+            if (typeof code !== "string") {
+                throw new Error("Input code must be a string");
+            }
+
+            return controlFlow(code);
+        }
+
+        // Compressor module
+        function compressor(code) {
+            if (typeof code !== "string") {
+                throw new Error("Input code must be a string.");
+            }
+            if (code.length < 10 || code.match(/^[\s\d\p]*$/)) {
+                return code.match(/^\s*(.*?)\s*$/) ? code.match(/^\s*(.*?)\s*$/)[1] || "" : "";
+            }
+
+            const strings = {};
+            let stringCount = 0;
+            const keywordsMap = {};
+
+            const LUA_KEYWORDS = [
+                "and", "break", "do", "else", "elseif", "end", "false", "for", "function",
+                "goto", "if", "in", "local", "nil", "not", "or", "repeat", "return",
+                "then", "true", "until", "while"
+            ];
+
+            const KW_PLACEHOLDER_PRE = "@@KW_";
+            const KW_PLACEHOLDER_POST = "_KW@@";
+            const STR_PLACEHOLDER_PRE = "@@S_";
+            const STR_PLACEHOLDER_POST = "_S@@";
+
+            function preserveStrings(c) {
+                c = c.replace(/\[(=*)\[(.*?)\]\1\]/g, function(match, equals, str) {
+                    stringCount++;
+                    const key = STR_PLACEHOLDER_PRE + stringCount + STR_PLACEHOLDER_POST;
+                    strings[key] = "[" + equals + "[" + str + "]" + equals + "]";
+                    return key;
+                });
+                c = c.replace(/"(.*?)"/g, function(match, str) {
+                    if (str.indexOf("\\") === -1 && str.indexOf(STR_PLACEHOLDER_PRE) !== -1) {
+                        return '"' + str + '"';
+                    }
+                    stringCount++;
+                    const key = STR_PLACEHOLDER_PRE + stringCount + STR_PLACEHOLDER_POST;
+                    strings[key] = '"' + str + '"';
+                    return key;
+                });
+                c = c.replace(/'(.*?)'/g, function(match, str) {
+                    if (str.indexOf("\\") === -1 && str.indexOf(STR_PLACEHOLDER_PRE) !== -1) {
+                        return "'" + str + "'";
+                    }
+                    stringCount++;
+                    const key = STR_PLACEHOLDER_PRE + stringCount + STR_PLACEHOLDER_POST;
+                    strings[key] = match;
+                    return key;
+                });
+                return c;
+            }
+
+            function preserveKeywords(c) {
+                for (const keyword of LUA_KEYWORDS) {
+                    const placeholder = KW_PLACEHOLDER_PRE + keyword + KW_PLACEHOLDER_POST;
+                    keywordsMap[placeholder] = keyword;
+                    c = c.replace(new RegExp(`([^\\w_])(${keyword})([^\\w_])`, 'g'), `$1${placeholder}$3`);
+                    c = c.replace(new RegExp(`^(${keyword})([^\\w_])`, 'g'), `${placeholder}$2`);
+                    c = c.replace(new RegExp(`([^\\w_])(${keyword})$`, 'g'), `$1${placeholder}`);
+                    c = c.replace(new RegExp(`^(${keyword})$`, 'g'), placeholder);
+                }
+                return c;
+            }
+
+            function restoreKeywords(c) {
+                for (const [placeholder, keyword] of Object.entries(keywordsMap)) {
+                    c = c.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), keyword);
+                }
+                return c;
+            }
+
+            function restoreStrings(c) {
+                for (let i = stringCount; i >= 1; i--) {
+                    const key = STR_PLACEHOLDER_PRE + i + STR_PLACEHOLDER_POST;
+                    c = c.replace(new RegExp(key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), strings[key]);
+                }
+                return c;
+            }
+
+            code = preserveStrings(code);
+            code = preserveKeywords(code);
+
+            code = code.replace(/--\[\[.*?\]\]/g, "");
+            code = code.replace(/--[^\n]*/g, "");
+
+            code = code.replace(/[\n\r]+/g, " ");
+            code = code.replace(/\s+/g, " ");
+
+            code = code.replace(/\s*\.\.\s*/g, "..");
+            code = code.replace(/\s*([+\-*/%.\\^#<>=~,;:(){}[\]])\s*/g, "$1");
+            code = code.replace(/\s*\.\s*/g, ".");
+            code = code.replace(/\.\./, "..");
+
+            code = code.match(/^\s*(.*?)\s*$/) ? code.match(/^\s*(.*?)\s*$/)[1] || "" : "";
+
+            code = restoreKeywords(code);
+            code = restoreStrings(code);
+
+            return code;
+        }
+
+        // Anti-tamper module
+        function antiTamper(code) {
+            const antiTamperCode = `do  
+    local D,T,P,X,S,E,R,Pa,GM,SM,RG,RS,RE,CG,Sel,C,G=  
+        debug,type,pcall,xpcall,tostring,error,rawget,pairs,  
+        getmetatable,setmetatable,rawget,rawset,rawequal,collectgarbage,select,coroutine,_G  
+  
+    local function dbgOK()  
+        if T(D)~="table" then return false end  
+        for _,k in Pa{"getinfo","getlocal","getupvalue","traceback","sethook","setupvalue","getregistry"} do  
+            if T(D[k])~="function" then return false end  
+        end  
+        return true  
+    end  
+    if not dbgOK() then E("Tamper Detected! Reason: Debug library incomplete") return end  
+  
+    local function isNative(f)  
+        local i=D.getinfo(f)  
+        return i and i.what=="C"  
+    end  
+  
+    local function checkNativeFuncs()  
+        local natives={  
+            P,X,assert,E,print,RG,RS,RE,tonumber,S,T,  
+            Sel,next,ipairs,Pa,CG,GM,SM,  
+            load,loadstring,loadfile,dofile,collectgarbage,  
+            D.getinfo,D.getlocal,D.getupvalue,D.sethook,D.setupvalue,D.traceback,  
+            C.create,C.resume,C.yield,C.status,  
+            math.abs,math.acos,math.asin,math.atan,math.ceil,math.cos,math.deg,math.exp,  
+            math.floor,math.fmod,math.huge,math.log,math.max,math.min,math.modf,math.pi,  
+            math.rad,math.random,math.sin,math.sqrt,math.tan,  
+            os.clock,os.date,os.difftime,os.execute,os.exit,os.getenv,os.remove,  
+            os.rename,os.setlocale,os.time,os.tmpname,  
+            string.byte,string.char,string.dump,string.find,string.format,string.gmatch,  
+            string.gsub,string.len,string.lower,string.match,string.rep,string.reverse,  
+            string.sub,string.upper,  
+            table.insert,table.maxn,table.remove,table.sort  
+        }  
+        local mts={string,table,math,os,G,package}  
+        for _,t in Pa(mts) do  
+            local mt=GM(t)  
+            if mt then  
+                for _,m in Pa{"__index","__newindex","__call","__metatable"} do  
+                    local mf=mt[m]  
+                    if mf and T(mf)=="function" and not isNative(mf) then  
+                        return false,"Metamethod tampered: "..m  
+                    end  
+                end  
+            end  
+        end  
+        for _,fn in Pa(natives) do  
+            if T(fn)=="function" and not isNative(fn) then  
+                return false,"Native function replaced or wrapped"  
+            end  
+        end  
+        return true  
+    end  
+  
+    local function isMinified(f)  
+        local i=D.getinfo(f,"Sl")  
+        return i and i.linedefined==i.lastlinedefined  
+    end  
+  
+    local function scanUp(f)  
+        local i=1  
+        while true do  
+            local n,v=D.getupvalue(f,i)  
+            if not n then break end  
+            if T(v)=="function" and not isMinified(v) then return false,"Suspicious upvalue: "..n end  
+            i=i+1  
+        end  
+        return true  
+    end  
+  
+    local function scanLocals(l)  
+        local i=1  
+        while true do  
+            local n,v=D.getlocal(l,i)  
+            if not n then break end  
+            if T(v)=="function" and not isMinified(v) then return false,"Suspicious local: "..n end  
+            i=i+1  
+        end  
+        return true  
+    end  
+  
+    local function checkGlobals()  
+        local essentials={"pcall","xpcall","type","tostring","string","table","debug","coroutine","math","os","package"}  
+        for _,k in Pa(essentials) do  
+            if T(G[k])~=T(_G[k]) then return false,"Global modified: "..k end  
+        end  
+        if package and package.loaded and T(package.loaded.debug)~="table" then  
+            return false,"Package.debug modified"  
+        end  
+        return true  
+    end  
+  
+    local function run()  
+        local ok,r=checkNativeFuncs()  
+        if not ok then return false,r end  
+        ok,r=checkGlobals()  
+        if not ok then return false,r end  
+        for l=2,4 do  
+            local i=D.getinfo(l,"f")  
+            if i and i.func then  
+                ok,r=scanUp(i.func)  
+                if not ok then return false,r.." @lvl "..l end  
+            end  
+            ok,r=scanLocals(l)  
+            if not ok then return false,r.." @lvl "..l end  
+        end  
+        return true  
+    end  
+  
+    local ok,r=run()  
+    if not ok then  
+        E("Tamper Detected! Reason: "..S(r))  
+        while true do E("Tamper Detected! Reason: "..S(r)) end  
+    end  
+end
+`;
+            return antiTamperCode + "\n" + code;
+        }
+
+        // Wrap In Function module
+        function wrapInFunction(code) {
+            return `return (function(...) ${code} end)(...)`;
+        }
+
+        function generateRandomName(len) {
+            len = len || Math.floor(Math.random() * (12 - 8 + 1)) + 8;
+            const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            let name = "";
+            for (let i = 0; i < len; i++) {
+                name += charset[Math.floor(Math.random() * charset.length)];
+            }
+            return name;
+        }
+
+        // Main obfuscation pipeline
+        function obfuscateScript() {
+            const input = document.getElementById('inputScript').value;
+            if (!input.trim()) {
+                alert('Please enter a script to obfuscate');
+                return;
+            }
+
+            let obfuscated = input;
+
+            try {
+                // Apply pipeline in order from your config
+                obfuscated = stringEncoder(obfuscated);
+                obfuscated = garbageCodeInserter(obfuscated, 20);
+                obfuscated = opaquePredicateInjector(obfuscated);
+                obfuscated = controlFlowObfuscator(obfuscated);
+                obfuscated = variableRenamer(obfuscated);
+                obfuscated = garbageCodeInserter(obfuscated, 15);
+                obfuscated = antiTamper(obfuscated);
+                obfuscated = compressor(obfuscated);
+                obfuscated = wrapInFunction(obfuscated);
+                obfuscated = addWatermark(obfuscated);
+
+                document.getElementById('outputScript').value = obfuscated;
+            } catch (error) {
+                alert('Error during obfuscation: ' + error.message);
+            }
+        }
+
+        function clearScript() {
+            document.getElementById('inputScript').value = '';
+            document.getElementById('outputScript').value = '';
+        }
+
+        function copyScript() {
+            const output = document.getElementById('outputScript');
+            if (!output.value) {
+                alert('Nothing to copy');
+                return;
+            }
+            
+            output.select();
+            output.setSelectionRange(0, 99999);
+            document.execCommand('copy');
+            
+            const originalBg = output.style.background;
+            output.style.background = '#d4edda';
+            setTimeout(() => {
+                output.style.background = originalBg;
+            }, 200);
+        }
+    </script>
 </body>
 </html>
