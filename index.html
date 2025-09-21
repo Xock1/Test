@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Prometheus-Style Advanced Obfuscator</title>
+</head>
+<body>
+    <h1>Prometheus-Style Advanced Lua Obfuscator</h1>
+    <p style="color: #fff; opacity: 0.8;">Based on Prometheus Obfuscator Architecture</p>
+    
+    <textarea id="scriptInput" placeholder="Paste your Lua script here...">print('hello world')</textarea>
+    
+    <br><br>
+    
+    <button onclick="obfuscate()">Obfuscate</button>
+    <button onclick="copyOutput()">Copy</button>
+    <button onclick="clearAll()">Clear</button>
+    
+    <br><br>
+    
+    <textarea id="scriptOutput" readonly placeholder="Obfuscated script will appear here..."></textarea>
+
+    <script>
+        // Prometheus-style AST Node Types
+        const AstKind = {
+            // Misc
+            TopNode: "TopNode",
+            Block: "Block",
+            
+            // Statements
+            LocalVariableDeclaration: "LocalVariableDeclaration",
+            FunctionCallStatement: "FunctionCallStatement",
+            AssignmentStatement: "AssignmentStatement",
+            ReturnStatement: "ReturnStatement",
+            IfStatement: "IfStatement",
+            WhileStatement: "WhileStatement",
+            ForStatement: "ForStatement",
+            DoStatement: "DoStatement",
+            
+            // Expressions
+            StringExpression: "StringExpression",
+            NumberExpression: "NumberExpression",
+            BooleanExpression: "BooleanExpression",
+            NilExpression: "NilExpression",
+            VariableExpression: "VariableExpression",
+            FunctionCallExpression: "FunctionCallExpression",
+            IndexExpression: "IndexExpression",
+            TableConstructorExpression: "TableConstructorExpression",
+            FunctionLiteralExpression: "FunctionLiteralExpression",
+            
+            // Binary Operations
+            AddExpression: "AddExpression",
+            SubExpression: "SubExpression",
+            MulExpression: "MulExpression",
+            DivExpression: "DivExpression",
+            ModExpression: "ModExpression",
+            PowExpression: "PowExpression",
+            StrCatExpression: "StrCatExpression",
+            
+            // Comparison
+            LessThanExpression: "LessThanExpression",
+            GreaterThanExpression: "GreaterThanExpression",
+            EqualsExpression: "EqualsExpression",
+            NotEqualsExpression: "NotEqualsExpression",
+            
+            // Logical
+            AndExpression: "AndExpression",
+            OrExpression: "OrExpression",
+            NotExpression: "NotExpression",
+        };
+
+        // Prometheus-style Scope Management
+        class Scope {
+            constructor(parent = null) {
+                this.parent = parent;
+                this.variables = new Map();
+                this.varCounter = 0;
+                this.isGlobal = parent === null;
+            }
+            
+            addVariable(name = null) {
+                if (!name) {
+                    name = this.generateVariableName();
+                }
+                const id = ++this.varCounter;
+                this.variables.set(id, name);
+                return id;
+            }
+            
+            getVariableName(id) {
+                return this.variables.get(id) || `var_${id}`;
+            }
+            
+            generateVariableName() {
+                return generateMangledName(this.varCounter);
+            }
+        }
+
+        // Enhanced name generation based on Prometheus
+        let nameId = 0;
+        const VarDigits = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_";
+        const VarStartDigits = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let shuffledVarDigits = VarDigits;
+        let shuffledVarStartDigits = VarStartDigits;
+        
+        const charset = "qwertyuiopasdfghjklzxcvbnmQWERTYUIOPASDFGHJKLZXCVBNM1234567890";
+        
+        function randomString(len) {
+            len = len || Math.floor(Math.random() * 14) + 2;
+            let result = "";
+            for (let i = 0; i < len; i++) {
+                result += charset[Math.floor(Math.random() * charset.length)];
+            }
+            return result;
+        }
+        
+        function shuffle(array) {
+            const arr = Array.from(array);
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+            return arr.join('');
+        }
+        
+        function generateMangledName(id) {
+            if (id === null || id === undefined) id = nameId++;
+            
+            let name = '';
+            let d = id % shuffledVarStartDigits.length;
+            id = Math.floor((id - d) / shuffledVarStartDigits.length);
+            name += shuffledVarStartDigits[d];
+            
+            while (id > 0) {
+                d = id % shuffledVarDigits.length;
+                id = Math.floor((id - d) / shuffledVarDigits.length);
+                name += shuffledVarDigits[d];
+            }
+            return name;
+        }
+        
+        function prepareShuffledNameGenerator() {
+            shuffledVarDigits = shuffle(VarDigits);
+            shuffledVarStartDigits = shuffle(VarStartDigits);
+            nameId = Math.floor(Math.random() * 1000);
+        }
+
+        // Prometheus-style AST Factory Functions
+        const Ast = {
+            StringExpression: (value) => ({ kind: AstKind.StringExpression, value, isConstant: true }),
+            NumberExpression: (value) => ({ kind: AstKind.NumberExpression, value, isConstant: true }),
+            BooleanExpression: (value) => ({ kind: AstKind.BooleanExpression, value, isConstant: true }),
+            NilExpression: () => ({ kind: AstKind.NilExpression, value: null, isConstant: true }),
+            VariableExpression: (scope, id) => ({ kind: AstKind.VariableExpression, scope, id }),
+            FunctionCallExpression: (base, args) => ({ kind: AstKind.FunctionCallExpression, base, args }),
+            TableConstructorExpression: (entries) => ({ kind: AstKind.TableConstructorExpression, entries }),
+            IndexExpression: (base, index) => ({ kind: AstKind.IndexExpression, base, index }),
+            
+            // Table entries
+            TableEntry: (value) => ({ kind: "TableEntry", value }),
+            KeyedTableEntry: (key, value) => ({ kind: "KeyedTableEntry", key, value }),
+            
+            // Assignment
+            AssignmentStatement: (lhs, rhs) => ({ kind: AstKind.AssignmentStatement, lhs, rhs }),
+            AssignmentVariable: (scope, id) => ({ kind: "AssignmentVariable", scope, id }),
+            AssignmentIndexing: (base, index) => ({ kind: "AssignmentIndexing", base, index }),
+            
+            // Local declarations
+            LocalVariableDeclaration: (scope, ids, expressions) => ({
+                kind: AstKind.LocalVariableDeclaration, scope, ids, expressions
+            }),
+            
+            // Control flow
+            ReturnStatement: (args) => ({ kind: AstKind.ReturnStatement, args }),
+            Block: (statements, scope) => ({ kind: AstKind.Block, statements, scope }),
+            
+            // Functions
+            FunctionLiteralExpression: (args, body) => ({
+                kind: AstKind.FunctionLiteralExpression, args, body
+            }),
+            
+            // Binary operations
+            AddExpression: (lhs, rhs) => ({ kind: AstKind.AddExpression, lhs, rhs }),
+            SubExpression: (lhs, rhs) => ({ kind: AstKind.SubExpression, lhs, rhs }),
+            MulExpression: (lhs, rhs) => ({ kind: AstKind.MulExpression, lhs, rhs }),
+            DivExpression: (lhs, rhs) => ({ kind: AstKind.DivExpression, lhs, rhs }),
+            OrExpression: (lhs, rhs) => ({ kind: AstKind.OrExpression, lhs, rhs }),
+            AndExpression: (lhs, rhs) => ({ kind: AstKind.AndExpression, lhs, rhs }),
+        };
+
+        // Simple Lua parser for basic constructs
+        class LuaParser {
+            constructor(code) {
+                this.code = code;
+                this.pos = 0;
+                this.length = code.length;
+            }
+            
+            parse() {
+                const globalScope = new Scope();
+                const statements = this.parseStatements(globalScope);
+                return Ast.Block(statements, globalScope);
+            }
+            
+            parseStatements(scope) {
+                const statements = [];
+                
+                while (this.pos < this.length) {
+                    this.skipWhitespace();
+                    if (this.pos >= this.length) break;
+                    
+                    const statement = this.parseStatement(scope);
+                    if (statement) {
+                        statements.push(statement);
+                    }
+                }
+                
+                return statements;
+            }
+            
+            parseStatement(scope) {
+                this.skipWhitespace();
+                
+                if (this.match('local')) {
+                    return this.parseLocalDeclaration(scope);
+                } else if (this.match('print')) {
+                    return this.parsePrintCall(scope);
+                } else if (this.match('return')) {
+                    return this.parseReturn(scope);
+                }
+                
+                // Try to parse as assignment or expression statement
+                const expr = this.parseExpression(scope);
+                if (expr) {
+                    // If it's a function call, make it a statement
+                    if (expr.kind === AstKind.FunctionCallExpression) {
+                        return { kind: AstKind.FunctionCallStatement, base: expr.base, args: expr.args };
+                    }
+                }
+                
+                return expr;
+            }
+            
+            parseLocalDeclaration(scope) {
+                this.consume('local');
+                this.skipWhitespace();
+                
+                const varName = this.parseIdentifier();
+                if (!varName) return null;
+                
+                const varId = scope.addVariable(varName);
+                this.skipWhitespace();
+                
+                let expressions = [];
+                if (this.match('=')) {
+                    this.consume('=');
+                    this.skipWhitespace();
+                    const expr = this.parseExpression(scope);
+                    if (expr) expressions.push(expr);
+                }
+                
+                return Ast.LocalVariableDeclaration(scope, [varId], expressions);
+            }
+            
+            parsePrintCall(scope) {
+                this.consume('print');
+                this.skipWhitespace();
+                this.consume('(');
+                this.skipWhitespace();
+                
+                const args = [];
+                const arg = this.parseExpression(scope);
+                if (arg) args.push(arg);
+                
+                this.skipWhitespace();
+                this.consume(')');
+                
+                const printVar = scope.addVariable('print');
+                return {
+                    kind: AstKind.FunctionCallStatement,
+                    base: Ast.VariableExpression(scope, printVar),
+                    args
+                };
+            }
+            
+            parseReturn(scope) {
+                this.consume('return');
+                this.skipWhitespace();
+                
+                const args = [];
+                const arg = this.parseExpression(scope);
+                if (arg) args.push(arg);
+                
+                return Ast.ReturnStatement(args);
+            }
+            
+            parseExpression(scope) {
+                this.skipWhitespace();
+                
+                if (this.peek() === '"' || this.peek() === "'") {
+                    return this.parseString();
+                }
+                
+                if (this.isDigit(this.peek())) {
+                    return this.parseNumber();
+                }
+                
+                if (this.isAlpha(this.peek())) {
+                    return this.parseIdentifierExpression(scope);
+                }
+                
+                return null;
+            }
+            
+            parseString() {
+                const quote = this.consume();
+                let value = '';
+                
+                while (this.pos < this.length && this.peek() !== quote) {
+                    if (this.peek() === '\\') {
+                        this.consume(); // consume backslash
+                        const escaped = this.consume();
+                        switch (escaped) {
+                            case 'n': value += '\n'; break;
+                            case 't': value += '\t'; break;
+                            case 'r': value += '\r'; break;
+                            case '\\': value += '\\'; break;
+                            case '"': value += '"'; break;
+                            case "'": value += "'"; break;
+                            default: value += escaped; break;
+                        }
+                    } else {
+                        value += this.consume();
+                    }
+                }
+                
+                if (this.pos < this.length) {
+                    this.consume(); // consume closing quote
+                }
+                
+                return Ast.StringExpression(value);
+            }
+            
+            parseNumber() {
+                let value = '';
+                while (this.pos < this.length && (this.isDigit(this.peek()) || this.peek() === '.')) {
+                    value += this.consume();
+                }
+                return Ast.NumberExpression(parseFloat(value));
+            }
+            
+            parseIdentifierExpression(scope) {
+                const name = this.parseIdentifier();
+                if (name) {
+                    const varId = scope.addVariable(name);
+                    return Ast.VariableExpression(scope, varId);
+                }
+                return null;
+            }
+            
+            parseIdentifier() {
+                let name = '';
+                if (this.isAlpha(this.peek()) || this.peek() === '_') {
+                    name += this.consume();
+                    while (this.pos < this.length && (this.isAlphaNumeric(this.peek()) || this.peek() === '_')) {
+                        name += this.consume();
+                    }
+                }
+                return name || null;
+            }
+            
+            // Utility methods
+            peek() {
+                return this.pos < this.length ? this.code[this.pos] : null;
+            }
+            
+            consume(expected = null) {
+                if (expected && !this.match(expected)) {
+                    throw new Error(`Expected '${expected}' but got '${this.peek()}'`);
+                }
+                return this.pos < this.length ? this.code[this.pos++] : null;
+            }
+            
+            match(str) {
+                return this.code.substr(this.pos, str.length) === str;
+            }
+            
+            skipWhitespace() {
+                while (this.pos < this.length && /\s/.test(this.peek())) {
+                    this.pos++;
+                }
+            }
+            
+            isDigit(char) {
+                return char && /\d/.test(char);
+            }
+            
+            isAlpha(char) {
+                return char && /[a-zA-Z]/.test(char);
+            }
+            
+            isAlphaNumeric(char) {
+                return this.isAlpha(char) || this.isDigit(char);
+            }
+        }
+
+        // Prometheus-style Compiler
+        class PrometheusCompiler {
+            constructor() {
+                this.globalScope = new Scope();
+                this.currentScope = this.globalScope;
+                this.stringConstants = [];
+                this.numberConstants = [];
+                this.upvalues = new Map();
+                this.registers = new Map();
+                this.nextRegisterId = 0;
+            }
+            
+            compile(ast) {
+                this.stringConstants = [];
+                this.numberConstants = [];
+                
+                // First pass: collect constants
+                this.collectConstants(ast);
+                
+                // Second pass: transform AST
+                const transformed = this.transformBlock(ast);
+                
+                // Generate obfuscated code
+                return this.generateCode(transformed);
+            }
+            
+            collectConstants(node) {
+                if (!node || typeof node !== 'object') return;
+                
+                if (node.kind === AstKind.StringExpression) {
+                    if (!this.stringConstants.includes(node.value)) {
+                        this.stringConstants.push(node.value);
+                    }
+                } else if (node.kind === AstKind.NumberExpression) {
+                    if (!this.numberConstants.includes(node.value)) {
+                        this.numberConstants.push(node.value);
+                    }
+                }
+                
+                // Recursively process all properties
+                for (const key in node) {
+                    if (key !== 'scope') { // avoid infinite recursion
+                        const value = node[key];
+                        if (Array.isArray(value)) {
+                            value.forEach(item => this.collectConstants(item));
+                        } else if (typeof value === 'object') {
+                            this.collectConstants(value);
+                        }
+                    }
+                }
+            }
+            
+            transformBlock(block) {
+                const transformedStatements = [];
+                
+                // Add constant table initialization
+                if (this.stringConstants.length > 0) {
+                    const constTableVar = this.globalScope.addVariable();
+                    const shuffledConstants = [...this.stringConstants];
+                    
+                    // Shuffle constants
+                    for (let i = shuffledConstants.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [shuffledConstants[i], shuffledConstants[j]] = [shuffledConstants[j], shuffledConstants[i]];
+                    }
+                    
+                    // Add decoy strings
+                    for (let i = 0; i < 5; i++) {
+                        shuffledConstants.splice(
+                            Math.floor(Math.random() * shuffledConstants.length),
+                            0,
+                            randomString(8)
+                        );
+                    }
+                    
+                    const tableEntries = shuffledConstants.map(str => 
+                        Ast.TableEntry(Ast.StringExpression(str))
+                    );
+                    
+                    transformedStatements.push(
+                        Ast.LocalVariableDeclaration(
+                            this.globalScope,
+                            [constTableVar],
+                            [Ast.TableConstructorExpression(tableEntries)]
+                        )
+                    );
+                    
+                    this.constTableVar = constTableVar;
+                }
+                
+                // Transform original statements
+                for (const statement of block.statements) {
+                    const transformed = this.transformStatement(statement);
+                    if (transformed) {
+                        transformedStatements.push(transformed);
+                    }
+                }
+                
+                return Ast.Block(transformedStatements, block.scope);
+            }
+            
+            transformStatement(statement) {
+                if (!statement) return null;
+                
+                switch (statement.kind) {
+                    case AstKind.LocalVariableDeclaration:
+                        return this.transformLocalDeclaration(statement);
+                    case AstKind.FunctionCallStatement:
+                        return this.transformFunctionCallStatement(statement);
+                    case AstKind.ReturnStatement:
+                        return this.transformReturnStatement(statement);
+                    default:
+                        return statement;
+                }
+            }
+            
+            transformLocalDeclaration(statement) {
+                const transformedExpressions = statement.expressions.map(expr => 
+                    this.transformExpression(expr)
+                );
+                
+                return Ast.LocalVariableDeclaration(
+                    statement.scope,
+                    statement.ids,
+                    transformedExpressions
+                );
+            }
+            
+            transformFunctionCallStatement(statement) {
+                return {
+                    ...statement,
+                    base: this.transformExpression(statement.base),
+                    args: statement.args.map(arg => this.transformExpression(arg))
+                };
+            }
+            
+            transformReturnStatement(statement) {
+                return Ast.ReturnStatement(
+                    statement.args.map(arg => this.transformExpression(arg))
+                );
+            }
+            
+            transformExpression(expression) {
+                if (!expression) return null;
+                
+                switch (expression.kind) {
+                    case AstKind.StringExpression:
+                        return this.transformStringExpression(expression);
+                    case AstKind.NumberExpression:
+                        return this.transformNumberExpression(expression);
+                    case AstKind.VariableExpression:
+                        return expression; // Variable names already mangled by scope
+                    default:
+                        return expression;
+                }
+            }
+            
+            transformStringExpression(expression) {
+                if (this.constTableVar) {
+                    const index = this.stringConstants.indexOf(expression.value);
+                    if (index !== -1) {
+                        // Create obfuscated index access
+                        const obfuscatedIndex = this.createObfuscatedNumber(index + 1);
+                        return Ast.IndexExpression(
+                            Ast.VariableExpression(this.globalScope, this.constTableVar),
+                            obfuscatedIndex
+                        );
+                    }
+                }
+                return expression;
+            }
+            
+            transformNumberExpression(expression) {
+                if (Math.random() < 0.7) {
+                    return this.createObfuscatedNumber(expression.value);
+                }
+                return expression;
+            }
+            
+            createObfuscatedNumber(value) {
+                const methods = [
+                    // Simple arithmetic
+                    (val) => {
+                        const a = Math.floor(Math.random() * 100) + 1;
+                        const b = val - a;
+                        return Ast.AddExpression(Ast.NumberExpression(a), Ast.NumberExpression(b));
+                    },
+                    // Subtraction
+                    (val) => {
+                        const a = val + Math.floor(Math.random() * 50) + 10;
+                        const b = a - val;
+                        return Ast.SubExpression(Ast.NumberExpression(a), Ast.NumberExpression(b));
+                    },
+                    // Multiplication
+                    (val) => {
+                        if (val === 0) return Ast.NumberExpression(0);
+                        const factor = Math.floor(Math.random() * 10) + 2;
+                        return Ast.DivExpression(Ast.NumberExpression(val * factor), Ast.NumberExpression(factor));
+                    }
+                ];
+                
+                const method = methods[Math.floor(Math.random() * methods.length)];
+                return method(value);
+            }
+            
+            generateCode(ast) {
+                // Simple code generation - in a real implementation this would be much more sophisticated
+                return this.unparseBlock(ast);
+            }
+            
+            unparseBlock(block) {
+                return block.statements.map(stmt => this.unparseStatement(stmt)).join(' ');
+            }
+            
+            unparseStatement(statement) {
+                switch (statement.kind) {
+                    case AstKind.LocalVariableDeclaration:
+                        return this.unparseLocalDeclaration(statement);
+                    case AstKind.FunctionCallStatement:
+                        return this.unparseFunctionCallStatement(statement);
+                    case AstKind.ReturnStatement:
+                        return this.unparseReturnStatement(statement);
+                    default:
+                        return '';
+                }
+            }
+            
+            unparseLocalDeclaration(statement) {
+                const varNames = statement.ids.map(id => statement.scope.getVariableName(id));
+                const expressions = statement.expressions.map(expr => this.unparseExpression(expr));
+                
+                if (expressions.length > 0) {
+                    return `local ${varNames.join(',')}=${expressions.join(',')}`;
+                } else {
+                    return `local ${varNames.join(',')}`;
+                }
+            }
+            
+            unparseFunctionCallStatement(statement) {
+                const base = this.unparseExpression(statement.base);
+                const args = statement.args.map(arg => this.unparseExpression(arg)).join(',');
+                return `${base}(${args})`;
+            }
+            
+            unparseReturnStatement(statement) {
+                const args = statement.args.map(arg => this.unparseExpression(arg)).join(',');
+                return `return ${args}`;
+            }
+            
+            unparseExpression(expression) {
+                if (!expression) return '';
+                
+                switch (expression.kind) {
+                    case AstKind.StringExpression:
+                        return `"${this.escapeString(expression.value)}"`;
+                    case AstKind.NumberExpression:
+                        return expression.value.toString();
+                    case AstKind.VariableExpression:
+                        return expression.scope.getVariableName(expression.id);
+                    case AstKind.IndexExpression:
+                        return `${this.unparseExpression(expression.base)}[${this.unparseExpression(expression.index)}]`;
+                    case AstKind.TableConstructorExpression:
+                        const entries = expression.entries.map(entry => {
+                            if (entry.kind === 'KeyedTableEntry') {
+                                return `[${this.unparseExpression(entry.key)}]=${this.unparseExpression(entry.value)}`;
+                            } else {
+                                return this.unparseExpression(entry.value);
+                            }
+                        }).join(',');
+                        return `{${entries}}`;
+                    case AstKind.AddExpression:
+                        return `(${this.unparseExpression(expression.lhs)}+${this.unparseExpression(expression.rhs)})`;
+                    case AstKind.SubExpression:
+                        return `(${this.unparseExpression(expression.lhs)}-${this.unparseExpression(expression.rhs)})`;
+                    case AstKind.MulExpression:
+                        return `(${this.unparseExpression(expression.lhs)}*${this.unparseExpression(expression.rhs)})`;
+                    case AstKind.DivExpression:
+                        return `(${this.unparseExpression(expression.lhs)}/${this.unparseExpression(expression.rhs)})`;
+                    default:
+                        return expression.toString();
+                }
+            }
+            
+            escapeString(str) {
+                return str.replace(/\\/g, '\\\\')
+                         .replace(/"/g, '\\"')
+                         .replace(/\n/g, '\\n')
+                         .replace(/\t/g, '\\t')
+                         .replace(/\r/g, '\\r');
+            }
+        }
+
+        // Enhanced Control Flow Obfuscation
+        function addControlFlowObfuscation(code) {
+            const wrapperVar1 = generateMangledName();
+            const wrapperVar2 = generateMangledName();
+            const conditionVar = generateMangledName();
+            const dummyVar = generateMangledName();
+            
+            // Create complex nested structure
+            return `do local ${conditionVar}=true;` +
+                   `local ${dummyVar}=function()return ${Math.floor(Math.random()*1000)}end;` +
+                   `local ${wrapperVar1}=function()` +
+                   `if ${conditionVar} and ${dummyVar}()>0 then ` +
+                   code +
+                   ` end end;` +
+                   `local ${wrapperVar2}=function()` +
+                   `if not not ${conditionVar} then ${wrapperVar1}() end ` +
+                   `end;${wrapperVar2}() end`;
+        }
+
+        // Advanced Anti-Tamper Protection
+        function addAntiTamper(code) {
+            const checks = [];
+            
+            for (let i = 0; i < 3; i++) {
+                const checkVar = generateMangledName();
+                const errorVar = generateMangledName();
+                const validationVar = generateMangledName();
+                
+                const randomValue1 = Math.floor(Math.random() * 10000);
+                const randomValue2 = Math.floor(Math.random() * 10000);
+                const expectedResult = randomValue1 + randomValue2;
+                
+                checks.push(
+                    `local ${validationVar}=${randomValue1}+${randomValue2};` +
+                    `local ${checkVar}=${validationVar}==${expectedResult};` +
+                    `local ${errorVar}=function()error("Tampering detected!",0)end;` +
+                    `if not ${checkVar} then ${errorVar}()end;`
+                );
+            }
+            
+            // Environment validation
+            const envVar = generateMangledName();
+            const envCheck = `local ${envVar}=getfenv and pcall and type;` +
+                            `if not ${envVar} then error("Invalid environment!",0)end;`;
+            
+            return envCheck + checks.join('') + code;
+        }
+        
+        function obfuscate() {
+            const input = document.getElementById('scriptInput').value;
+            if (!input.trim()) {
+                alert('Please enter a script first!');
+                return;
+            }
+            
+            try {
+                console.log('Starting Prometheus-style obfuscation...');
+                
+                prepareShuffledNameGenerator();
+                
+                console.log('Step 1: Parsing Lua code...');
+                const parser = new LuaParser(input);
+                const ast = parser.parse();
+                
+                console.log('Step 2: Compiling with Prometheus-style transformations...');
+                 const compiler = new PrometheusCompiler();
+                let obfuscated = compiler.compile(ast);
+                
+                console.log('Step 3: Adding control flow obfuscation...');
+                obfuscated = addControlFlowObfuscation(obfuscated);
+                
+                console.log('Step 4: Adding anti-tamper protection...');
+                obfuscated = addAntiTamper(obfuscated);
+                
+                console.log('Step 5: Adding multiple wrapper layers...');
+                for (let i = 0; i < 3; i++) {
+                    const wrapperVar = generateMangledName();
+                    const dummyVar = generateMangledName();
+                    obfuscated = `(function(${wrapperVar})` +
+                               `local ${dummyVar}=${wrapperVar} or function()end;` +
+                               `return(function()${obfuscated} end)()` +
+                               `end)()`;
+                }
+                
+                console.log('Step 6: Final watermarking...');
+                const watermark = `--[[Protected by Prometheus-Style Obfuscator ${randomString(8)}]]`;
+                obfuscated = watermark + obfuscated;
+                
+                console.log('Prometheus-style obfuscation complete!');
+                document.getElementById('scriptOutput').value = obfuscated;
+                
+            } catch (error) {
+                console.error('Obfuscation error:', error);
+                alert('Obfuscation failed: ' + error.message);
+                document.getElementById('scriptOutput').value = 'Error: ' + error.message + '\n\nNote: This is a simplified parser. For complex Lua code, use the full Prometheus obfuscator.';
+            }
+        }
+
+        function copyOutput() {
+            const output = document.getElementById('scriptOutput');
+            if (!output.value.trim()) {
+                alert('Nothing to copy! Obfuscate a script first.');
+                return;
+            }
+            
+            output.select();
+            document.execCommand('copy');
+            alert('Obfuscated code copied to clipboard!');
+        }
+
+        function clearAll() {
+            document.getElementById('scriptInput').value = '';
+            document.getElementById('scriptOutput').value = '';
+            console.clear();
+        }
+    </script>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            font-size: 2.5em;
+            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        p {
+            text-align: center;
+            margin-bottom: 30px;
+            font-style: italic;
+        }
+        
+        textarea {
+            width: 100%;
+            height: 220px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 14px;
+            border: none;
+            border-radius: 12px;
+            padding: 20px;
+            resize: vertical;
+            box-sizing: border-box;
+            background: rgba(255,255,255,0.95);
+            color: #333;
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+        
+        textarea:focus {
+            outline: none;
+            box-shadow: 0 12px 35px rgba(0,0,0,0.4);
+            transform: translateY(-2px);
+        }
+        
+        textarea::placeholder {
+            color: #666;
+            opacity: 0.8;
+        }
+        
+        button {
+            padding: 15px 30px;
+            margin: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            background: linear-gradient(45deg, #ff6b6b, #ee5a24);
+            color: white;
+            transition: all 0.3s ease;
+            box-shadow: 0 6px 20px rgba(238, 90, 36, 0.3);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        button::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: left 0.5s;
+        }
+        
+        button:hover::before {
+            left: 100%;
+        }
+        
+        button:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 10px 30px rgba(238, 90, 36, 0.4);
+        }
+        
+        button:active {
+            transform: translateY(-1px);
+        }
+        
+        #scriptOutput {
+            background: rgba(40,44,52,0.95);
+            color: #61dafb;
+            border: 2px solid rgba(97, 218, 251, 0.3);
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        }
+        
+        #scriptOutput:focus {
+            border-color: rgba(97, 218, 251, 0.6);
+        }
+        
+        @keyframes pulse {
+            0% { box-shadow: 0 6px 20px rgba(238, 90, 36, 0.3); }
+            50% { box-shadow: 0 8px 25px rgba(238, 90, 36, 0.5); }
+            100% { box-shadow: 0 6px 20px rgba(238, 90, 36, 0.3); }
+        }
+        
+        button:focus {
+            animation: pulse 2s infinite;
+            outline: none;
+        }
+        
+        /* Responsive design */
+        @media (max-width: 768px) {
+            body {
+                padding: 15px;
+            }
+            
+            h1 {
+                font-size: 2em;
+            }
+            
+            textarea {
+                height: 180px;
+                padding: 15px;
+            }
+            
+            button {
+                padding: 12px 25px;
+                font-size: 14px;
+                margin: 5px;
+            }
+        }
+    </style>
+</body>
+</html>
